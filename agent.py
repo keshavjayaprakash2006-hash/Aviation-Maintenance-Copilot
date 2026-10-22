@@ -17,7 +17,12 @@ import urllib.request
 import uuid
 from typing import Any, Dict, List, Optional, TypedDict
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langchain_ollama import ChatOllama
@@ -26,7 +31,6 @@ from langgraph.graph import END, StateGraph
 from search_engine import detect_recurring_defects, get_record, search_records
 from utils.normalizer import normalize_text
 
-load_dotenv()
 
 REFUSAL_THRESHOLD = 0.35
 REFUSAL_MESSAGE = "Insufficient evidence in historical logbooks to provide a confident fix."
@@ -57,12 +61,41 @@ TOOLS = [search_records_tool, get_record_tool]
 # ---------------------------------------------------------------------------
 # LLM Initialization with Cloud Gemini & Local Ollama Support
 # ---------------------------------------------------------------------------
-class GeminiLLM:
-    """Lightweight LangChain-compatible wrapper for Google Gemini API."""
+DEFAULT_GEMINI_MODELS = [
+    "gemini-3.5-flash",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
+    "gemini-3.8-flash",
+]
 
-    def __init__(self, api_key: str, model: str | None = None) -> None:
-        self.api_key = api_key
-        self.model = model or os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
+
+class GeminiLLM:
+    """Lightweight LangChain-compatible wrapper for Google Gemini API with automatic model fallback."""
+
+    def __init__(self, api_key: str | list[str], model: str | None = None) -> None:
+        if isinstance(api_key, str):
+            self.api_keys = [k.strip() for k in api_key.split(",") if k.strip()]
+        else:
+            self.api_keys = list(api_key)
+
+        primary_model = (model or os.getenv("GEMINI_MODEL", "gemini-3.5-flash")).strip()
+        self.model = primary_model
+
+        # Build candidate fallback models list starting with primary model
+        configured_fallbacks = os.getenv("GEMINI_FALLBACK_MODELS", "")
+        if configured_fallbacks:
+            fallback_list = [m.strip() for m in configured_fallbacks.split(",") if m.strip()]
+        else:
+            fallback_list = DEFAULT_GEMINI_MODELS
+
+        seen = set()
+        self.candidate_models: list[str] = []
+        for m in [primary_model] + fallback_list:
+            if m not in seen:
+                seen.add(m)
+                self.candidate_models.append(m)
 
     def invoke(self, messages: list[Any]) -> AIMessage:
         prompt_lines = []
@@ -79,38 +112,58 @@ class GeminiLLM:
                 prompt_lines.append(f"{content}\n")
 
         prompt_text = "\n".join(prompt_lines)
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
         payload = json.dumps({
             "contents": [{"parts": [{"text": prompt_text}]}],
             "generationConfig": {"temperature": 0.2, "maxOutputTokens": 3072},
         }).encode("utf-8")
 
-        try:
-            req = urllib.request.Request(
-                url,
-                data=payload,
-                headers={"Content-Type": "application/json", "x-goog-api-key": self.api_key},
-            )
-            with urllib.request.urlopen(req, timeout=45) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                candidates = data.get("candidates", [])
-                if candidates:
-                    parts = candidates[0].get("content", {}).get("parts", [])
-                    text_parts = [p.get("text", "") for p in parts if "text" in p]
-                    text = "\n".join(text_parts).strip()
-                    if text:
-                        return AIMessage(content=text)
-        except Exception as exc:
-            print(f"Cloud Gemini request failed or timed out ({exc}); falling back to local Ollama...")
-            try:
-                base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-                model_name = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
-                chat_model = ChatOllama(model=model_name, base_url=base_url, temperature=0.1)
-                return chat_model.invoke(messages)
-            except Exception as o_exc:
-                print(f"Ollama fallback error: {o_exc}")
+        last_error = None
+        for key_idx, current_api_key in enumerate(self.api_keys):
+            for model_idx, target_model in enumerate(self.candidate_models):
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent"
+                try:
+                    req = urllib.request.Request(
+                        url,
+                        data=payload,
+                        headers={"Content-Type": "application/json", "x-goog-api-key": current_api_key},
+                    )
+                    with urllib.request.urlopen(req, timeout=40) as resp:
+                        data = json.loads(resp.read().decode("utf-8"))
+                        candidates = data.get("candidates", [])
+                        if candidates:
+                            parts = candidates[0].get("content", {}).get("parts", [])
+                            text_parts = [p.get("text", "") for p in parts if "text" in p]
+                            text = "\n".join(text_parts).strip()
+                            if text:
+                                if target_model != self.model:
+                                    print(f"Fallback active: Successfully generated response using model '{target_model}'.")
+                                return AIMessage(content=text)
+                except urllib.error.HTTPError as http_err:
+                    last_error = http_err
+                    status = http_err.code
+                    print(
+                        f"Warning: Model '{target_model}' returned HTTP {status} "
+                        f"(Rate limit / quota exhausted or model unavailable). "
+                        f"Cascading to next fallback model..."
+                    )
+                    continue
+                except Exception as exc:
+                    last_error = exc
+                    print(f"Warning: Model '{target_model}' failed ({exc}). Trying next fallback model...")
+                    continue
 
-        return AIMessage(content="Unable to generate response from either Gemini or Ollama.")
+        print(f"All Gemini models exhausted or failed ({last_error}); attempting local Ollama fallback...")
+        try:
+            base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+            model_name = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
+            chat_model = ChatOllama(model=model_name, base_url=base_url, temperature=0.1)
+            return chat_model.invoke(messages)
+        except Exception as o_exc:
+            print(f"Ollama fallback error: {o_exc}")
+
+        return AIMessage(
+            content="API rate limits exhausted across all available Gemini models and local Ollama is offline. Please retry in a few moments."
+        )
 
 
 def get_llm():
@@ -119,7 +172,7 @@ def get_llm():
     if google_api_key:
         try:
             model_name = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
-            print(f"Initializing Google Gemini API ({model_name})...")
+            print(f"Initializing Google Gemini API ({model_name}) with multi-model fallback...")
             return GeminiLLM(api_key=google_api_key, model=model_name)
         except Exception as exc:
             print(f"Warning: Gemini init failed ({exc}), falling back to Ollama...")
