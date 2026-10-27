@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import urllib.request
 import uuid
 from typing import Any, Dict, List, Optional, TypedDict
@@ -129,30 +130,35 @@ class LocalOllamaLLM:
             combined_user_text = "\n".join(user_parts)
             chat_messages.append({"role": "user", "content": combined_user_text})
 
+        predict_tokens = int(os.getenv("OLLAMA_NUM_PREDICT", "450"))
         payload = json.dumps({
             "model": self.model,
             "messages": chat_messages,
             "stream": False,
             "options": {
                 "temperature": 0.1,
-                "num_predict": 1024,
+                "num_predict": predict_tokens,
             },
         }).encode("utf-8")
 
         url = f"{self.base_url}/api/chat"
+        print(f"[Ollama] Querying {self.model} via /api/chat (num_predict={predict_tokens})...")
+        t_start = time.time()
         try:
             req = urllib.request.Request(
                 url,
                 data=payload,
                 headers={"Content-Type": "application/json"},
             )
-            with urllib.request.urlopen(req, timeout=300) as resp:
+            with urllib.request.urlopen(req, timeout=180) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 response_text = data.get("message", {}).get("content", "").strip()
                 if response_text:
+                    elapsed = time.time() - t_start
+                    print(f"[Ollama] Response generated in {elapsed:.2f}s ({len(response_text)} chars).")
                     return AIMessage(content=response_text)
         except urllib.error.URLError as u_err:
-            print(f"Ollama connection error on {url}: {u_err}")
+            print(f"[Ollama Connection Error] {url}: {u_err}")
             return AIMessage(
                 content=(
                     f"⚠️ Local Ollama is offline or unreachable at {self.base_url}.\n"
@@ -160,7 +166,7 @@ class LocalOllamaLLM:
                 )
             )
         except Exception as exc:
-            print(f"Ollama execution error: {exc}")
+            print(f"[Ollama Execution Warning] /api/chat error: {exc}. Trying /api/generate fallback...")
 
         # Fallback to /api/generate if /api/chat had issues
         try:
@@ -169,20 +175,22 @@ class LocalOllamaLLM:
                 "model": self.model,
                 "prompt": full_prompt,
                 "stream": False,
-                "options": {"temperature": 0.1, "num_predict": 1024},
+                "options": {"temperature": 0.1, "num_predict": predict_tokens},
             }).encode("utf-8")
             gen_req = urllib.request.Request(
                 f"{self.base_url}/api/generate",
                 data=gen_payload,
                 headers={"Content-Type": "application/json"},
             )
-            with urllib.request.urlopen(gen_req, timeout=300) as resp:
+            with urllib.request.urlopen(gen_req, timeout=180) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 response_text = data.get("response", "").strip()
                 if response_text:
+                    elapsed = time.time() - t_start
+                    print(f"[Ollama Fallback] Response generated in {elapsed:.2f}s ({len(response_text)} chars).")
                     return AIMessage(content=response_text)
         except Exception as gen_exc:
-            print(f"Ollama generate fallback error: {gen_exc}")
+            print(f"[Ollama Error] Generate fallback failed: {gen_exc}")
 
         return AIMessage(
             content="Local Ollama is currently busy or loading model. Please retry in a few moments."
@@ -222,6 +230,7 @@ def normalize_input_node(state: AgentState) -> dict[str, Any]:
     """Normalize raw user input using aviation abbreviation dictionary."""
     raw = state.get("raw_query", "")
     norm = normalize_text(raw)
+    print(f"\n[Agent] Stage 1/3 (Normalize Input): '{raw}' -> '{norm}'")
     trace = list(state.get("tool_trace", []))
     trace.append({
         "step": "normalize_input",
@@ -235,6 +244,7 @@ def normalize_input_node(state: AgentState) -> dict[str, Any]:
 def retrieve_and_evaluate_node(state: AgentState) -> dict[str, Any]:
     """Execute hybrid search, detect recurring defects, and enforce refusal logic."""
     query = state.get("normalized_query") or state.get("raw_query", "")
+    print(f"[Agent] Stage 2/3 (Hybrid Retrieval): Querying '{query}'...")
     results = search_records(query, top_k=5)
 
     trace = list(state.get("tool_trace", []))
@@ -242,6 +252,8 @@ def retrieve_and_evaluate_node(state: AgentState) -> dict[str, Any]:
 
     # Call detect_recurring_defects on the search results before generating the answer
     recurring_info = detect_recurring_defects(results)
+    if recurring_info.get("is_recurring"):
+        print(f"[Agent] 🚨 Fleet recurrence detected: [{recurring_info.get('component')}] occurred {recurring_info.get('count')} times.")
 
     trace.append({
         "step": "retrieve_records",
@@ -256,6 +268,7 @@ def retrieve_and_evaluate_node(state: AgentState) -> dict[str, Any]:
     # Strict Refusal Threshold Logic:
     # If no results or highest match score is below 0.35, refuse immediately.
     if not results or top_score < REFUSAL_THRESHOLD:
+        print(f"[Agent] ⚠️ Decision: REFUSED (Top score {top_score:.3f} < threshold {REFUSAL_THRESHOLD})")
         trace.append({
             "step": "refusal_evaluation",
             "decision": "REFUSED",
@@ -269,6 +282,8 @@ def retrieve_and_evaluate_node(state: AgentState) -> dict[str, Any]:
             "cited_records": [],
             "tool_trace": trace,
         }
+
+    print(f"[Agent] ✅ Decision: ACCEPTED (Top match score {top_score:.3f} >= threshold {REFUSAL_THRESHOLD})")
 
     trace.append({
         "step": "refusal_evaluation",
@@ -315,7 +330,7 @@ def generate_node(state: AgentState) -> dict[str, Any]:
         "1. DO NOT include generic conversational filler (such as 'Based on the retrieved historical maintenance records...'). Jump directly into the technical diagnosis.\n"
         "2. Explain the SPECIFIC MECHANICAL DEFECTS and symptoms in detail—do not just recite numbers or IDs. Detail how the fault manifested (e.g., ground run pressure spikes, relief valve bypass, cylinder compression leaks, transducer drift) and why.\n"
         "3. Detail the exact historical repairs performed (e.g., adjusting oil pressure relief valve, torquing fittings, servicing oil cooler, replacing gaskets).\n"
-        "4. Keep the response focused, structured, and informative (concise yet packed with technical troubleshooting substance).\n"
+        "4. Keep the response focused, structured, and concise (under 250 words total) while maintaining technical troubleshooting substance.\n"
         "5. For EVERY finding, symptom, and repair action, explicitly cite the verified logbook record using '[Record #<ID>]' (e.g., [Record #100062]).\n\n"
         "FORMATTING STRUCTURE:\n"
         "### 1. Problem & Malfunction Breakdown\n"
@@ -323,7 +338,7 @@ def generate_node(state: AgentState) -> dict[str, Any]:
         "### 2. Historical Corrective Actions & Root Causes\n"
         "Detail the physical repairs and root cause discoveries made in past logs [Record #XXXXXX].\n\n"
         "### 3. Recommended Flight-Line Troubleshooting Steps\n"
-        "Provide prioritized, step-by-step diagnostic actions for the maintenance technician."
+        "Provide 2-3 prioritized diagnostic actions for the maintenance technician."
     )
 
     call_id = f"call_{uuid.uuid4().hex[:8]}"
@@ -365,6 +380,7 @@ def generate_node(state: AgentState) -> dict[str, Any]:
         tool_msg,
     ]
 
+    print(f"[Agent] Stage 3/3 (Generate Diagnosis): Generating structured diagnosis citing {len(results)} records...")
     response = LLM.invoke(messages)
 
     # Check if LLM requested an additional tool call (e.g. get_record_tool)
@@ -402,6 +418,8 @@ def generate_node(state: AgentState) -> dict[str, Any]:
     cited_records = [r for r in results if r["ident"] in cited_ids]
     if not cited_records and results:
         cited_records = results[:2]
+
+    print(f"[Agent] Diagnosis complete. Citing records: {[r['ident'] for r in cited_records]}")
 
     trace.append({
         "step": "generate_answer",

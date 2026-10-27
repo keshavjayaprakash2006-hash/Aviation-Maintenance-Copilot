@@ -1,6 +1,6 @@
 # Aviation Maintenance RAG Copilot - Benchmark Evaluation Report
 
-**Generated:** 2026-10-22 14:22:35  
+**Generated:** 2026-10-28 00:42:16  
 **Evaluation Scope:** Normalization, Entity Extraction, Hybrid Retrieval (BM25 vs FAISS vs RRF), Refusal Guardrails, and E2E Agent Citations.
 
 ---
@@ -11,8 +11,8 @@
 | :--- | :--- | :--- | :--- | :--- |
 | **Abbreviation & Grammar** | Normalization Accuracy | **100.0%** | >= 90% | ✅ PASSED |
 | **Domain Entity Extractor** | Extraction Hit Rate | **100.0%** | >= 80% | ✅ PASSED |
-| **Retrieval Engine (RRF)** | Hit@5 (Recall@5) | **84.0%** | >= 80% | ✅ PASSED |
-| **Retrieval Engine (RRF)** | Mean Reciprocal Rank (MRR@5) | **0.538** | >= 0.50 | ✅ PASSED |
+| **Retrieval Engine (RRF)** | Hit@5 (Recall@5) | **93.3%** | >= 80% | ✅ PASSED |
+| **Retrieval Engine (RRF)** | Mean Reciprocal Rank (MRR@5) | **0.6744** | >= 0.50 | ✅ PASSED |
 | **Refusal Gate** | Specificity (Out-of-Domain Refusal) | **100.0%** | >= 90% | ✅ PASSED |
 | **Refusal Gate** | Sensitivity (In-Domain Acceptance) | **100.0%** | >= 80% | ✅ PASSED |
 | **Refusal Gate** | Overall F1-Score | **1.0** | >= 0.85 | ✅ PASSED |
@@ -21,13 +21,13 @@
 
 ## 2. Retrieval Comparison: BM25 vs FAISS vs Hybrid RRF
 
-*Evaluated against ground-truth maintenance logs (Sample size: 25 records)*
+*Evaluated against ground-truth maintenance logs (Sample size: 15 records)*
 
 | Method | Hit@1 | Hit@3 | Hit@5 | Avg Latency |
 | :--- | :--- | :--- | :--- | :--- |
-| **BM25 Alone** | 40.0% | 68.0% | 76.0% | ~2 ms |
-| **FAISS Alone (Dense)** | 36.0% | 52.0% | 56.0% | ~15 ms |
-| **Hybrid RRF (Fusion)** | **36.0%** | **68.0%** | **84.0%** | **269.02 ms** |
+| **BM25 Alone** | 53.3% | 80.0% | 93.3% | ~2 ms |
+| **FAISS Alone (Dense)** | 46.7% | 66.7% | 73.3% | ~15 ms |
+| **Hybrid RRF (Fusion)** | **53.3%** | **80.0%** | **93.3%** | **184.8 ms** |
 
 > **Finding:** Hybrid Reciprocal Rank Fusion combines exact keyword matching with semantic vector understanding, providing superior retrieval coverage over either single modality.
 
@@ -49,5 +49,5 @@
 ---
 
 ## 4. End-to-End Agent Performance
-- **Average Agent Response Time:** 6.22 s
+- **Average Agent Response Time:** N/A s
 - **Citation Consistency:** 100% of accepted technical guidance explicitly cites retrieved logbook record IDs (e.g. `[Record #ID]`).

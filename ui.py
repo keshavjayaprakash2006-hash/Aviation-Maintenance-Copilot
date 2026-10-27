@@ -10,6 +10,7 @@ Provides:
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -25,8 +26,9 @@ import streamlit as st
 from search_engine import extract_domain_terms
 from utils.normalizer import normalize_text
 
-FASTAPI_URL = "http://127.0.0.1:8000"
+FASTAPI_URL = os.getenv("FASTAPI_URL", "http://127.0.0.1:8000")
 CHAT_ENDPOINT = f"{FASTAPI_URL}/chat"
+CLIENT_TIMEOUT = float(os.getenv("COPILOT_CLIENT_TIMEOUT", "180.0"))
 
 # ---------------------------------------------------------------------------
 # Streamlit Page Configuration
@@ -167,23 +169,42 @@ def check_backend_health() -> bool:
 
 def query_backend_api(prompt: str) -> dict[str, Any]:
     """Send POST request to FastAPI /chat endpoint with local fallback."""
+    print(f"\n[UI] Submitting query to backend at {CHAT_ENDPOINT} (timeout={CLIENT_TIMEOUT}s): '{prompt}'")
     try:
-        response = httpx.post(CHAT_ENDPOINT, json={"query": prompt}, timeout=60.0)
+        response = httpx.post(CHAT_ENDPOINT, json={"query": prompt}, timeout=CLIENT_TIMEOUT)
         if response.status_code == 200:
-            return response.json()
+            data = response.json()
+            print(f"[UI] Backend response received (200 OK). Citations: {len(data.get('cited_records', []))}")
+            return data
+        print(f"[UI Error] Backend returned HTTP {response.status_code}: {response.text}")
         return {
             "answer": f"Backend Error ({response.status_code}): {response.text}",
             "cited_records": [],
             "tool_trace": [{"step": "error", "detail": response.text}],
             "recurring_defect_info": {"is_recurring": False},
         }
+    except (httpx.TimeoutException, TimeoutError) as t_err:
+        print(f"[UI Timeout] Request to {CHAT_ENDPOINT} timed out after {CLIENT_TIMEOUT}s: {t_err}")
+        return {
+            "answer": (
+                f"⏱️ Diagnostic request timed out after {CLIENT_TIMEOUT:.0f}s while awaiting Ollama generation. "
+                "Local inference on CPU may take longer for deep reasoning. "
+                "Please retry or ensure Ollama is not busy with another task."
+            ),
+            "cited_records": [],
+            "tool_trace": [{"step": "timeout", "detail": f"Timed out after {CLIENT_TIMEOUT}s"}],
+            "recurring_defect_info": {"is_recurring": False},
+        }
     except httpx.ConnectError:
-        # Graceful fallback: run local agent directly if backend is offline
+        print(f"[UI Warning] Could not connect to FastAPI at {CHAT_ENDPOINT}. Running local agent fallback...")
         try:
             from agent import run_agent
 
-            return run_agent(prompt)
+            res = run_agent(prompt)
+            print(f"[UI Fallback] Local agent executed successfully. Citations: {len(res.get('cited_records', []))}")
+            return res
         except Exception as exc:
+            print(f"[UI Error] Local agent fallback failed: {exc}")
             return {
                 "answer": f"Could not connect to FastAPI at {CHAT_ENDPOINT} and local fallback failed: {exc}",
                 "cited_records": [],
@@ -191,6 +212,7 @@ def query_backend_api(prompt: str) -> dict[str, Any]:
                 "recurring_defect_info": {"is_recurring": False},
             }
     except Exception as exc:
+        print(f"[UI Error] Unexpected client error: {exc}")
         return {
             "answer": f"Unexpected client error: {exc}",
             "cited_records": [],

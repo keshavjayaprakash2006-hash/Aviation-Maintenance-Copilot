@@ -13,6 +13,8 @@ Provides:
 from __future__ import annotations
 
 import sys
+import time
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -109,17 +111,25 @@ def chat_endpoint(request: ChatRequest) -> ChatResponse:
   if not raw_query:
     raise HTTPException(status_code=400, detail="Query string cannot be empty.")
 
+  start_t = time.time()
+  print(f"\n[FastAPI /chat] Incoming maintenance query: '{raw_query}'")
   try:
     result = run_agent(raw_query)
+    elapsed = time.time() - start_t
+    cited = result.get("cited_records", [])
+    print(f"[FastAPI /chat] Pipeline succeeded in {elapsed:.2f}s | Citations: {[r.get('ident') for r in cited]}")
     return ChatResponse(
       answer=result.get("answer", ""),
-      cited_records=result.get("cited_records", []),
+      cited_records=cited,
       tool_trace=result.get("tool_trace", []),
       recurring_defect_info=result.get(
         "recurring_defect_info", {"is_recurring": False}
       ),
     )
   except Exception as exc:
+    elapsed = time.time() - start_t
+    print(f"[FastAPI /chat Error] Pipeline failed after {elapsed:.2f}s: {exc}")
+    traceback.print_exc()
     raise HTTPException(
       status_code=500,
       detail=f"Error executing agent pipeline: {exc}",

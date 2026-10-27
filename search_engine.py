@@ -152,23 +152,28 @@ def get_ollama_embeddings(texts: list[str], model: str = EMBED_MODEL) -> np.ndar
         data=payload,
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-    embeddings = np.array(data["embeddings"], dtype=np.float32)
-    return embeddings
+    try:
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        embeddings = np.array(data.get("embeddings", []), dtype=np.float32)
+        return embeddings
+    except Exception as exc:
+        print(f"[Embeddings Warning] Ollama embedding failed ({exc}) on {OLLAMA_EMBED_URL}")
+        return np.empty((0, EMBED_DIM), dtype=np.float32)
 
 
 # ---------------------------------------------------------------------------
 # Hybrid Search Engine
 # ---------------------------------------------------------------------------
 class HybridSearchEngine:
-    """Hybrid search engine combining BM25, FAISS dense vectors, and Domain Terms."""
+    """Hybrid search engine combining BM25, FAISS/NumPy dense vectors, and Domain Terms."""
 
     def __init__(self, data_path: Path = DATA_PATH, force_rebuild: bool = False) -> None:
         self.data_path = data_path
         self.df: pd.DataFrame = pd.DataFrame()
         self.bm25: BM25Okapi | None = None
-        self.faiss_index: faiss.IndexFlatIP | None = None
+        self.faiss_index: Any = None
+        self.dense_embeddings: np.ndarray | None = None
         self._initialize(force_rebuild=force_rebuild)
 
     def _initialize(self, force_rebuild: bool = False) -> None:
@@ -186,26 +191,19 @@ class HybridSearchEngine:
         self.bm25 = BM25Okapi(tokenized_corpus)
         print("BM25 index ready.")
 
-        # 2. Build or load FAISS dense vector index
+        # 2. Build or load FAISS / NumPy dense vector index
         self._setup_faiss_index(corpus, force_rebuild=force_rebuild)
 
     def _setup_faiss_index(self, corpus: list[str], force_rebuild: bool = False) -> None:
-        """Load or build FAISS index using cached embeddings when available."""
-        if faiss is None:
-            print("FAISS module not installed; continuing in pure BM25 search mode.")
-            self.faiss_index = None
-            return
-
-        if not force_rebuild and FAISS_INDEX_PATH.exists() and EMBEDDINGS_CACHE_PATH.exists():
-            print(f"Loading cached FAISS index from {FAISS_INDEX_PATH}...")
-            self.faiss_index = faiss.read_index(str(FAISS_INDEX_PATH))
-            print(f"FAISS index loaded ({self.faiss_index.ntotal} vectors).")
-            return
-
-        embeddings: np.ndarray
+        """Load or build dense vector index using cached embeddings when available."""
+        # Check if precomputed embeddings exist
         if not force_rebuild and EMBEDDINGS_CACHE_PATH.exists():
             print(f"Loading cached embeddings from {EMBEDDINGS_CACHE_PATH}...")
-            embeddings = np.load(str(EMBEDDINGS_CACHE_PATH))
+            embeddings = np.load(str(EMBEDDINGS_CACHE_PATH)).astype(np.float32)
+            # Normalize for cosine similarity
+            norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+            self.dense_embeddings = embeddings / np.maximum(norms, 1e-9)
+            print(f"Dense vector cache loaded ({len(self.dense_embeddings)} vectors, dim={self.dense_embeddings.shape[1]}).")
         else:
             print(f"Computing embeddings via Ollama '{EMBED_MODEL}' in batches of {BATCH_SIZE}...")
             all_embeddings = []
@@ -220,21 +218,31 @@ class HybridSearchEngine:
             embeddings = np.vstack(all_embeddings).astype(np.float32)
             print(f"Saving embeddings cache to {EMBEDDINGS_CACHE_PATH}...")
             np.save(str(EMBEDDINGS_CACHE_PATH), embeddings)
+            norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+            self.dense_embeddings = embeddings / np.maximum(norms, 1e-9)
 
-        # Normalize vectors for cosine similarity via inner product
-        faiss.normalize_L2(embeddings)
-        dimension = embeddings.shape[1]
-        print(f"Building FAISS IndexFlatIP (dim={dimension}, count={len(embeddings)})...")
-        self.faiss_index = faiss.IndexFlatIP(dimension)
-        self.faiss_index.add(embeddings)
-
-        print(f"Saving FAISS index to {FAISS_INDEX_PATH}...")
-        faiss.write_index(self.faiss_index, str(FAISS_INDEX_PATH))
-        print("FAISS index built and saved.")
+        if faiss is not None:
+            if not force_rebuild and FAISS_INDEX_PATH.exists():
+                print(f"Loading cached FAISS index from {FAISS_INDEX_PATH}...")
+                self.faiss_index = faiss.read_index(str(FAISS_INDEX_PATH))
+                print(f"FAISS index loaded ({self.faiss_index.ntotal} vectors).")
+            elif self.dense_embeddings is not None:
+                dimension = self.dense_embeddings.shape[1]
+                print(f"Building FAISS IndexFlatIP (dim={dimension}, count={len(self.dense_embeddings)})...")
+                self.faiss_index = faiss.IndexFlatIP(dimension)
+                faiss_emb = self.dense_embeddings.copy()
+                faiss.normalize_L2(faiss_emb)
+                self.faiss_index.add(faiss_emb)
+                print(f"Saving FAISS index to {FAISS_INDEX_PATH}...")
+                faiss.write_index(self.faiss_index, str(FAISS_INDEX_PATH))
+                print("FAISS index built and saved.")
+        else:
+            print("FAISS module not installed; dense vector search will run via high-speed NumPy cosine similarity.")
+            self.faiss_index = None
 
     def rebuild_index(self) -> None:
-        """Force re-embedding of normalized dataset and rebuild of FAISS index."""
-        print("\nRebuilding FAISS vector index and embeddings from scratch...")
+        """Force re-embedding of normalized dataset and rebuild of vector index."""
+        print("\nRebuilding vector index and embeddings from scratch...")
         corpus = self.df["COMBINED_NORMALIZED"].fillna("").tolist()
         self._setup_faiss_index(corpus, force_rebuild=True)
 
@@ -250,16 +258,29 @@ class HybridSearchEngine:
         return [(int(idx), float(scores[idx])) for idx in top_indices if scores[idx] > 0]
 
     def search_faiss(self, query: str, top_k: int = 50) -> list[tuple[int, float]]:
-        """Search using FAISS dense vectors, returning list of (doc_index, similarity)."""
-        if faiss is None or self.faiss_index is None:
-            return []
+        """Search using dense vectors via FAISS or NumPy, returning list of (doc_index, similarity)."""
         try:
             query_emb = get_ollama_embeddings([query])
-            faiss.normalize_L2(query_emb)
-            distances, indices = self.faiss_index.search(query_emb, top_k)
-            return [(int(indices[0][i]), float(distances[0][i])) for i in range(len(indices[0])) if indices[0][i] >= 0]
-        except Exception:
+            if query_emb is None or len(query_emb) == 0:
+                return []
+
+            # 1. FAISS C++ path
+            if faiss is not None and self.faiss_index is not None:
+                faiss.normalize_L2(query_emb)
+                distances, indices = self.faiss_index.search(query_emb, top_k)
+                return [(int(indices[0][i]), float(distances[0][i])) for i in range(len(indices[0])) if indices[0][i] >= 0]
+
+            # 2. NumPy high-speed cosine vector path
+            if self.dense_embeddings is not None and len(self.dense_embeddings) > 0:
+                norm = np.linalg.norm(query_emb, axis=1, keepdims=True)
+                norm_q = query_emb / np.maximum(norm, 1e-9)
+                scores = np.dot(self.dense_embeddings, norm_q[0])
+                top_indices = np.argsort(scores)[::-1][:top_k]
+                return [(int(idx), float(scores[idx])) for idx in top_indices if scores[idx] > 0]
+        except Exception as exc:
+            print(f"[Vector Search Error] {exc}")
             return []
+        return []
 
     def search_records(
         self,
@@ -292,6 +313,7 @@ class HybridSearchEngine:
 
         bm25_results = self.search_bm25(bm25_search_query, top_k=candidate_k)
         faiss_results = self.search_faiss(normalized_query, top_k=candidate_k)
+        print(f"[Search Engine] Query: '{query}' -> BM25 hits: {len(bm25_results)} | Dense vector hits: {len(faiss_results)}")
 
         # Compute Reciprocal Rank Fusion (RRF) scores
         rrf_scores: dict[int, float] = {}

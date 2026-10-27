@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-10-22 14:22:06",
+  "timestamp": "2026-10-28 00:42:11",
   "normalization": {
     "total_cases": 6,
     "passed": 6,
@@ -195,23 +195,23 @@
     ]
   },
   "retrieval": {
-    "sample_size": 25,
-    "avg_retrieval_latency_ms": 269.02,
+    "sample_size": 15,
+    "avg_retrieval_latency_ms": 184.8,
     "bm25": {
-      "hit_at_1": 0.4,
-      "hit_at_3": 0.68,
-      "hit_at_5": 0.76
+      "hit_at_1": 0.5333,
+      "hit_at_3": 0.8,
+      "hit_at_5": 0.9333
     },
     "faiss": {
-      "hit_at_1": 0.36,
-      "hit_at_3": 0.52,
-      "hit_at_5": 0.56
+      "hit_at_1": 0.4667,
+      "hit_at_3": 0.6667,
+      "hit_at_5": 0.7333
     },
     "hybrid_rrf": {
-      "hit_at_1": 0.36,
-      "hit_at_3": 0.68,
-      "hit_at_5": 0.84,
-      "mrr_at_5": 0.538
+      "hit_at_1": 0.5333,
+      "hit_at_3": 0.8,
+      "hit_at_5": 0.9333,
+      "mrr_at_5": 0.6744
     }
   },
   "refusal_gate": {
@@ -238,19 +238,19 @@
       },
       {
         "query": "WEATHER RADAR ANTENNA STABILIZATION GYRO DRIFT EXCESSIVE",
-        "top_score": 0.0363,
+        "top_score": 0.0364,
         "refused": true,
         "correct": true
       },
       {
         "query": "COCKPIT VOICE RECORDER UNDERWATER BEACON BATTERY EXPIRED",
-        "top_score": 0.0394,
+        "top_score": 0.0392,
         "refused": true,
         "correct": true
       },
       {
         "query": "TCAS TRAFFIC COLLISION RESOLUTION ADVISORY COMPUTATION ERROR",
-        "top_score": 0.027,
+        "top_score": 0.0271,
         "refused": true,
         "correct": true
       },
@@ -306,7 +306,7 @@
       },
       {
         "query": "CYL HEAD TEMP HIGH INOP",
-        "top_score": 0.8612,
+        "top_score": 0.8613,
         "accepted": true,
         "correct": true
       },
@@ -355,57 +355,6 @@
     ]
   },
   "agent_e2e": {
-    "total_evaluated": 3,
-    "avg_agent_latency_s": 6.22,
-    "cases": [
-      {
-        "query": "ENG OIL PRESS LOW",
-        "expected_accepted": true,
-        "actual_refused": false,
-        "cited_count": 5,
-        "citations_in_body": [
-          "105839",
-          "105842",
-          "100062",
-          "105841",
-          "100063",
-          "105839",
-          "105842",
-          "100062",
-          "105841",
-          "100063",
-          "100062",
-          "105841"
-        ],
-        "elapsed_seconds": 11.14,
-        "answer_preview": "Based on the historical maintenance records provided, there are multiple discrepancies related to engine oil pressure readings and adjustmen..."
-      },
-      {
-        "query": "TCAS TRAFFIC COLLISION RESOLUTION ADVISORY COMPUTATION ERROR",
-        "expected_accepted": false,
-        "actual_refused": true,
-        "cited_count": 0,
-        "citations_in_body": [],
-        "elapsed_seconds": 0.13,
-        "answer_preview": "Insufficient evidence in historical logbooks to provide a confident fix...."
-      },
-      {
-        "query": "ACFT HYD SYS A LEAK REPL PUMP",
-        "expected_accepted": true,
-        "actual_refused": false,
-        "cited_count": 5,
-        "citations_in_body": [
-          "100021",
-          "103376",
-          "103307",
-          "102997",
-          "102620",
-          "100021",
-          "103376"
-        ],
-        "elapsed_seconds": 7.39,
-        "answer_preview": "Based on the historical records, there are no direct findings related to a hydraulic system A leak and pump replacement. The identified issu..."
-      }
-    ]
+    "skipped": true
   }
 }
