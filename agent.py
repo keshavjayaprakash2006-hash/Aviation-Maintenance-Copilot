@@ -25,7 +25,10 @@ except ImportError:
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
-from langchain_ollama import ChatOllama
+try:
+    from langchain_ollama import ChatOllama
+except ImportError:
+    ChatOllama = None
 from langgraph.graph import END, StateGraph
 
 from search_engine import detect_recurring_defects, get_record, search_records
@@ -132,7 +135,7 @@ class LocalOllamaLLM:
             "stream": False,
             "options": {
                 "temperature": 0.1,
-                "num_predict": 2048,
+                "num_predict": 1024,
             },
         }).encode("utf-8")
 
@@ -143,7 +146,7 @@ class LocalOllamaLLM:
                 data=payload,
                 headers={"Content-Type": "application/json"},
             )
-            with urllib.request.urlopen(req, timeout=120) as resp:
+            with urllib.request.urlopen(req, timeout=300) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 response_text = data.get("message", {}).get("content", "").strip()
                 if response_text:
@@ -166,14 +169,14 @@ class LocalOllamaLLM:
                 "model": self.model,
                 "prompt": full_prompt,
                 "stream": False,
-                "options": {"temperature": 0.1, "num_predict": 2048},
+                "options": {"temperature": 0.1, "num_predict": 1024},
             }).encode("utf-8")
             gen_req = urllib.request.Request(
                 f"{self.base_url}/api/generate",
                 data=gen_payload,
                 headers={"Content-Type": "application/json"},
             )
-            with urllib.request.urlopen(gen_req, timeout=120) as resp:
+            with urllib.request.urlopen(gen_req, timeout=300) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 response_text = data.get("response", "").strip()
                 if response_text:
@@ -182,7 +185,7 @@ class LocalOllamaLLM:
             print(f"Ollama generate fallback error: {gen_exc}")
 
         return AIMessage(
-            content="Local Ollama failed to respond. Please check that Ollama is running and has the model loaded."
+            content="Local Ollama is currently busy or loading model. Please retry in a few moments."
         )
 
 
