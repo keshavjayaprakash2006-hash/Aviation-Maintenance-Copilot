@@ -5,5 +5,13 @@ echo Starting Aviation Maintenance Copilot - Streamlit UI
 echo App URL: http://localhost:8501
 echo ========================================================
 cd /d "%~dp0"
-"%~dp0venv\Scripts\python.exe" -m streamlit run ui.py
+
+set "PY_CMD=python"
+if exist "%~dp0venv\Scripts\python.exe" (
+    set "PY_CMD=%~dp0venv\Scripts\python.exe"
+) else if exist "%~dp0.venv\Scripts\python.exe" (
+    set "PY_CMD=%~dp0.venv\Scripts\python.exe"
+)
+
+%PY_CMD% -m streamlit run ui.py
 pause

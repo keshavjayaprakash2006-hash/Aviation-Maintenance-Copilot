@@ -15,6 +15,14 @@
 
 ---
 
+> [!NOTE]
+> **Repository Lineage & Fork Attribution**  
+> • **Upstream Source Repository:** [shyam-shankar/Aviation_Maintanence_Copilot-NexAIHack](https://github.com/shyam-shankar/Aviation_Maintanence_Copilot-NexAIHack)  
+> • **Current Project:** [keshavjayaprakash2006-hash/Aviation-Maintenance-Copilot](https://github.com/keshavjayaprakash2006-hash/Aviation-Maintenance-Copilot)  
+> • **Local Execution Enhancement:** Cloud API key requirements (Google Gemini/Cloud LLM) have been removed. The assistant runs **100% locally on localhost** using Ollama (`mistral:latest` / `qwen2.5:3b` + `nomic-embed-text`) for zero-cost, privacy-preserving MRO logbook inference.
+
+---
+
 > [!WARNING]
 > **MANDATORY FLIGHT SAFETY & AIRWORTHINESS ADVISORY**  
 > This copilot provides diagnostic reference based strictly on historical logbook entries from the MaintNet aviation maintenance dataset (University of North Dakota Department of Aviation). It does **not** provide FAA/EASA certified or manufacturer-approved maintenance procedures. Aviation maintenance technicians and certificated A&P mechanics must **always consult the official Aircraft Maintenance Manual (AMM), Illustrated Parts Catalog (IPC), and applicable Airworthiness Directives (ADs)** before performing maintenance or signing off an aircraft return-to-service.

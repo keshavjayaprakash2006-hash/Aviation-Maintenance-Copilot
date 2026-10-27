@@ -17,10 +17,15 @@ from __future__ import annotations
 import csv
 import json
 import re
+import os
 import sys
 import urllib.request
 from pathlib import Path
 from typing import Any
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 try:
     import faiss
@@ -38,8 +43,9 @@ FAISS_INDEX_PATH = ROOT_DIR / "data" / "faiss_index.bin"
 EMBEDDINGS_CACHE_PATH = ROOT_DIR / "data" / "embeddings_nomic.npy"
 TERMBANKS_PATH = ROOT_DIR / "data" / "Aviation_TermBanks_Dataset.csv"
 
-OLLAMA_EMBED_URL = "http://127.0.0.1:11434/api/embed"
-EMBED_MODEL = "nomic-embed-text"
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
+OLLAMA_EMBED_URL = f"{OLLAMA_BASE_URL}/api/embed"
+EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
 EMBED_DIM = 768
 BATCH_SIZE = 100
 

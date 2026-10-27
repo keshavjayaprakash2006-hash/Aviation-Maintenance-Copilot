@@ -59,129 +59,140 @@ TOOLS = [search_records_tool, get_record_tool]
 
 
 # ---------------------------------------------------------------------------
-# LLM Initialization with Cloud Gemini & Local Ollama Support
+# LLM Initialization with 100% Local Ollama (No Cloud API Keys Required)
 # ---------------------------------------------------------------------------
-DEFAULT_GEMINI_MODELS = [
-    "gemini-3.5-flash",
-    "gemini-2.5-flash",
-    "gemini-2.0-flash",
-    "gemini-1.5-flash",
-    "gemini-1.5-pro",
-    "gemini-3.8-flash",
-]
+class LocalOllamaLLM:
+    """Lightweight LangChain-compatible wrapper for local Ollama server."""
 
+    def __init__(self, base_url: str | None = None, model: str | None = None) -> None:
+        self.base_url = (base_url or os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")).rstrip("/")
+        requested_model = (model or os.getenv("OLLAMA_MODEL", "")).strip()
+        self.model = self._resolve_model(requested_model)
 
-class GeminiLLM:
-    """Lightweight LangChain-compatible wrapper for Google Gemini API with automatic model fallback."""
+    def _get_installed_models(self) -> list[str]:
+        """Fetch list of installed models from local Ollama instance."""
+        try:
+            req = urllib.request.Request(f"{self.base_url}/api/tags", headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                models = data.get("models", [])
+                return [m.get("name", "") for m in models if m.get("name")]
+        except Exception:
+            return []
 
-    def __init__(self, api_key: str | list[str], model: str | None = None) -> None:
-        if isinstance(api_key, str):
-            self.api_keys = [k.strip() for k in api_key.split(",") if k.strip()]
-        else:
-            self.api_keys = list(api_key)
+    def _resolve_model(self, preferred_model: str) -> str:
+        """Resolve model name, matching installed Ollama models if possible."""
+        installed = self._get_installed_models()
+        if preferred_model:
+            for m in installed:
+                if m == preferred_model or m.startswith(preferred_model) or preferred_model.startswith(m):
+                    return m
+            return preferred_model
 
-        primary_model = (model or os.getenv("GEMINI_MODEL", "gemini-3.5-flash")).strip()
-        self.model = primary_model
+        for candidate in ["mistral:latest", "mistral", "qwen2.5:3b", "qwen2.5", "llama3.2:latest", "llama3.2"]:
+            for m in installed:
+                if m == candidate or m.startswith(candidate.split(":")[0]):
+                    return m
 
-        # Build candidate fallback models list starting with primary model
-        configured_fallbacks = os.getenv("GEMINI_FALLBACK_MODELS", "")
-        if configured_fallbacks:
-            fallback_list = [m.strip() for m in configured_fallbacks.split(",") if m.strip()]
-        else:
-            fallback_list = DEFAULT_GEMINI_MODELS
-
-        seen = set()
-        self.candidate_models: list[str] = []
-        for m in [primary_model] + fallback_list:
-            if m not in seen:
-                seen.add(m)
-                self.candidate_models.append(m)
+        return installed[0] if installed else "mistral:latest"
 
     def invoke(self, messages: list[Any]) -> AIMessage:
-        prompt_lines = []
+        """Invoke local Ollama using /api/chat or /api/generate."""
+        chat_messages = []
+        user_parts = []
+        system_content = ""
+
         for msg in messages:
             msg_type = getattr(msg, "type", "user")
             content = getattr(msg, "content", "")
-            if msg_type == "system":
-                prompt_lines.append(f"System Instructions:\n{content}\n")
-            elif msg_type == "human":
-                prompt_lines.append(f"User Problem:\n{content}\n")
-            elif msg_type == "tool":
-                prompt_lines.append(f"Retrieved Historical Records:\n{content}\n")
-            elif content:
-                prompt_lines.append(f"{content}\n")
+            if not content:
+                continue
 
-        prompt_text = "\n".join(prompt_lines)
+            if msg_type == "system":
+                system_content = content
+            elif msg_type == "human":
+                user_parts.append(content)
+            elif msg_type == "tool":
+                user_parts.append(f"\n[Verified Historical Logbook Records]:\n{content}")
+            elif msg_type == "ai":
+                chat_messages.append({"role": "assistant", "content": content})
+            else:
+                user_parts.append(str(content))
+
+        if system_content:
+            chat_messages.insert(0, {"role": "system", "content": system_content})
+
+        if user_parts:
+            combined_user_text = "\n".join(user_parts)
+            chat_messages.append({"role": "user", "content": combined_user_text})
+
         payload = json.dumps({
-            "contents": [{"parts": [{"text": prompt_text}]}],
-            "generationConfig": {"temperature": 0.2, "maxOutputTokens": 3072},
+            "model": self.model,
+            "messages": chat_messages,
+            "stream": False,
+            "options": {
+                "temperature": 0.1,
+                "num_predict": 2048,
+            },
         }).encode("utf-8")
 
-        last_error = None
-        for key_idx, current_api_key in enumerate(self.api_keys):
-            for model_idx, target_model in enumerate(self.candidate_models):
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent"
-                try:
-                    req = urllib.request.Request(
-                        url,
-                        data=payload,
-                        headers={"Content-Type": "application/json", "x-goog-api-key": current_api_key},
-                    )
-                    with urllib.request.urlopen(req, timeout=40) as resp:
-                        data = json.loads(resp.read().decode("utf-8"))
-                        candidates = data.get("candidates", [])
-                        if candidates:
-                            parts = candidates[0].get("content", {}).get("parts", [])
-                            text_parts = [p.get("text", "") for p in parts if "text" in p]
-                            text = "\n".join(text_parts).strip()
-                            if text:
-                                if target_model != self.model:
-                                    print(f"Fallback active: Successfully generated response using model '{target_model}'.")
-                                return AIMessage(content=text)
-                except urllib.error.HTTPError as http_err:
-                    last_error = http_err
-                    status = http_err.code
-                    print(
-                        f"Warning: Model '{target_model}' returned HTTP {status} "
-                        f"(Rate limit / quota exhausted or model unavailable). "
-                        f"Cascading to next fallback model..."
-                    )
-                    continue
-                except Exception as exc:
-                    last_error = exc
-                    print(f"Warning: Model '{target_model}' failed ({exc}). Trying next fallback model...")
-                    continue
-
-        print(f"All Gemini models exhausted or failed ({last_error}); attempting local Ollama fallback...")
+        url = f"{self.base_url}/api/chat"
         try:
-            base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-            model_name = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
-            chat_model = ChatOllama(model=model_name, base_url=base_url, temperature=0.1)
-            return chat_model.invoke(messages)
-        except Exception as o_exc:
-            print(f"Ollama fallback error: {o_exc}")
+            req = urllib.request.Request(
+                url,
+                data=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                response_text = data.get("message", {}).get("content", "").strip()
+                if response_text:
+                    return AIMessage(content=response_text)
+        except urllib.error.URLError as u_err:
+            print(f"Ollama connection error on {url}: {u_err}")
+            return AIMessage(
+                content=(
+                    f"⚠️ Local Ollama is offline or unreachable at {self.base_url}.\n"
+                    f"Please ensure Ollama is running (`ollama serve`)."
+                )
+            )
+        except Exception as exc:
+            print(f"Ollama execution error: {exc}")
+
+        # Fallback to /api/generate if /api/chat had issues
+        try:
+            full_prompt = (f"System: {system_content}\n\n" if system_content else "") + "\n\n".join(user_parts)
+            gen_payload = json.dumps({
+                "model": self.model,
+                "prompt": full_prompt,
+                "stream": False,
+                "options": {"temperature": 0.1, "num_predict": 2048},
+            }).encode("utf-8")
+            gen_req = urllib.request.Request(
+                f"{self.base_url}/api/generate",
+                data=gen_payload,
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(gen_req, timeout=120) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                response_text = data.get("response", "").strip()
+                if response_text:
+                    return AIMessage(content=response_text)
+        except Exception as gen_exc:
+            print(f"Ollama generate fallback error: {gen_exc}")
 
         return AIMessage(
-            content="API rate limits exhausted across all available Gemini models and local Ollama is offline. Please retry in a few moments."
+            content="Local Ollama failed to respond. Please check that Ollama is running and has the model loaded."
         )
 
 
 def get_llm():
-    """Initialize primary LLM (Google Gemini cloud if configured, else local ChatOllama)."""
-    google_api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-    if google_api_key:
-        try:
-            model_name = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
-            print(f"Initializing Google Gemini API ({model_name}) with multi-model fallback...")
-            return GeminiLLM(api_key=google_api_key, model=model_name)
-        except Exception as exc:
-            print(f"Warning: Gemini init failed ({exc}), falling back to Ollama...")
-
-    # Primary local model: qwen2.5:3b via Ollama
+    """Initialize primary local Ollama LLM."""
     base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-    model_name = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
-    chat_model = ChatOllama(model=model_name, base_url=base_url, temperature=0.1)
-    return chat_model.bind_tools(TOOLS)
+    model_name = os.getenv("OLLAMA_MODEL", "")
+    llm = LocalOllamaLLM(base_url=base_url, model=model_name or None)
+    print(f"Initializing Local Ollama LLM ({llm.model}) at {llm.base_url}...")
+    return llm
 
 
 LLM = get_llm()
@@ -391,7 +402,7 @@ def generate_node(state: AgentState) -> dict[str, Any]:
 
     trace.append({
         "step": "generate_answer",
-        "model": "qwen2.5:3b",
+        "model": getattr(LLM, "model", "ollama"),
         "cited_ids": [r["ident"] for r in cited_records],
     })
 
