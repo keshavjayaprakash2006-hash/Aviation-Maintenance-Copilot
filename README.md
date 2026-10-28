@@ -15,13 +15,7 @@
 
 ---
 
-> [!NOTE]
-> **Repository Lineage & Fork Attribution**  
-> • **Upstream Source Repository:** [shyam-shankar/Aviation_Maintanence_Copilot-NexAIHack](https://github.com/shyam-shankar/Aviation_Maintanence_Copilot-NexAIHack)  
-> • **Current Project:** [keshavjayaprakash2006-hash/Aviation-Maintenance-Copilot](https://github.com/keshavjayaprakash2006-hash/Aviation-Maintenance-Copilot)  
-> • **Local Execution Enhancement:** Cloud API key requirements (Google Gemini/Cloud LLM) have been removed. The assistant runs **100% locally on localhost** using Ollama (`mistral:latest` / `qwen2.5:3b` + `nomic-embed-text`) for zero-cost, privacy-preserving MRO logbook inference.
 
----
 
 > [!WARNING]
 > **MANDATORY FLIGHT SAFETY & AIRWORTHINESS ADVISORY**  
